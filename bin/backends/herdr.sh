@@ -394,9 +394,11 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
   # refusal can be recognized and retried once on a compatible client; see
   # "client selection" below. A failed command's stderr is replayed verbatim.
   # The long-lived `server` launch is exec'd straight through: buffering its
-  # stderr would hold this call open for the server's whole lifetime.
+  # stderr would hold this call open for the server's whole lifetime. It also
+  # starts in a new session (fm_backend_herdr_new_session) so it never shares
+  # the launching agent's process group.
   if [ "${1:-}" = server ]; then
-    HERDR_SESSION="$session" "$client_bin" "$@" --session "$session"
+    HERDR_SESSION="$session" fm_backend_herdr_new_session "$client_bin" "$@" --session "$session"
     return $?
   fi
   failed_bin=$client_bin
@@ -415,6 +417,34 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
   fi
   [ -z "$err" ] || printf '%s\n' "$err" >&2
   return "$rc"
+}
+
+# fm_backend_herdr_new_session: run <command...> as the leader of a new session
+# and process group, so signals aimed at the caller's group never reach it.
+# Linux ships setsid(1); macOS does not, so perl's POSIX::setsid is the portable
+# fallback. With neither available the command runs in the caller's group.
+fm_backend_herdr_new_session() {  # <command...>
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX=setsid -e 'setsid(); exec { $ARGV[0] } @ARGV or exit 127' "$@"
+  else
+    "$@"
+  fi
+}
+
+# fm_backend_herdr_close_inherited_fds: close every descriptor above stdio in
+# the current shell. /dev/fd lists the shell's own open descriptors on Linux
+# and macOS; the descriptor used to read that listing is gone by the time the
+# loop runs, so closing it again is a harmless no-op.
+fm_backend_herdr_close_inherited_fds() {
+  local fd
+  for fd in /dev/fd/*; do
+    fd=${fd##*/}
+    case "$fd" in ''|*[!0-9]*) continue ;; esac
+    [ "$fd" -gt 2 ] || continue
+    eval "exec $fd>&-" 2>/dev/null || true
+  done
 }
 
 # --- client selection --------------------------------------------------------
@@ -1651,8 +1681,14 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. The server outlives its launcher and passes its startup environment to
 # every later pane, so remove home, harness identity, and supervision selection
-# inherited from whichever agent happened to start it. Bounded poll for the
-# server to report running.
+# inherited from whichever agent happened to start it. For the same reason it
+# keeps none of the caller's descriptors beyond stdio and runs in its own
+# session (fm_backend_herdr_cli's server launch): an inherited pipe write end,
+# such as the copy bash saves on a high descriptor when a redirected call runs
+# inside $(...), would hold the caller's command substitution open for the
+# server's whole lifetime, and a shared process group would let a group kill
+# of the caller take down the server and every pane it hosts. Bounded poll for
+# the server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
@@ -1660,7 +1696,11 @@ fm_backend_herdr_server_ensure() {  # <session>
   (
     unset FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
       CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
-    fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &
+    # exec, not a per-command redirection, so bash saves no copy of the
+    # caller's stdout or stderr on a high descriptor.
+    exec </dev/null >/dev/null 2>&1
+    fm_backend_herdr_close_inherited_fds
+    fm_backend_herdr_cli "$session" server &
   ) || return 1
   for i in $(seq 1 20); do
     running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)

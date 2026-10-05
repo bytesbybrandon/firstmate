@@ -1216,6 +1216,83 @@ test_server_ensure_scrubs_home_and_harness_identity() {
   pass "fm_backend_herdr_server_ensure: scrubs home and harness identity without disturbing unrelated environment or session routing"
 }
 
+# make_herdr_detach_fakebin: a stateful server stub whose `server` launch
+# records its pid, then stays alive (bounded) as a stand-in for the long-lived
+# real server; exec keeps the recorded pid valid for the test's inspection.
+make_herdr_detach_fakebin() {  # <dir> -> echoes fakebin dir
+  local dir=$1 fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  status)
+    if [ -e "$FM_HERDR_SERVER_MARKER" ]; then
+      printf '{"server":{"running":true}}\n'
+    else
+      printf '{"server":{"running":false}}\n'
+    fi
+    ;;
+  server)
+    printf '%s\n' "$$" > "$FM_HERDR_SERVER_MARKER.pid"
+    : > "$FM_HERDR_SERVER_MARKER"
+    exec sleep 30
+    ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
+test_server_ensure_cold_start_detaches_from_the_caller() {
+  local dir marker fb result caller_pid server_pid i caller_ids server_pgid caller_pgid
+  dir="$TMP_ROOT/server-detach"; mkdir -p "$dir"; marker="$dir/running"; result="$dir/result"
+  fb=$(make_herdr_detach_fakebin "$dir")
+  # The redirected call inside $(...) makes bash save the substitution pipe on
+  # a high descriptor; fd 7 stands in for any non-close-on-exec descriptor the
+  # caller holds. Neither may reach the long-lived server or anything waiting
+  # on it, or the substitution never sees EOF.
+  PATH="$fb:$PATH" FM_HERDR_SERVER_MARKER="$marker" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      ps -o pgid=,sid= -p $$ > "$1.caller"
+      exec 7>"$1.fd7"
+      out=$(fm_backend_herdr_server_ensure fmtest >/dev/null 2>&1; echo "rc=$?")
+      printf "%s\n" "$out" > "$1"
+    ' "$ROOT" "$result" &
+  caller_pid=$!
+  for i in $(seq 1 50); do
+    [ -s "$result" ] && break
+    sleep 0.2
+  done
+  server_pid=$(cat "$marker.pid" 2>/dev/null)
+  if [ ! -s "$result" ]; then
+    kill "$caller_pid" 2>/dev/null
+    [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null
+    fail "server_ensure cold start hung its enclosing command substitution (no result after 10s)"
+  fi
+  wait "$caller_pid" 2>/dev/null
+  [ -n "$server_pid" ] || fail "server_ensure cold start never launched the server"
+  caller_ids=$(cat "$result.caller")
+  caller_pgid=$(printf '%s' "$caller_ids" | awk '{print $1}')
+  server_pgid=$(ps -o pgid= -p "$server_pid" | tr -d ' ')
+  if [ -d "/proc/$server_pid/fd" ]; then
+    local server_sid fds='' fd
+    server_sid=$(ps -o sid= -p "$server_pid" | tr -d ' ')
+    for fd in "/proc/$server_pid/fd"/*; do fds="$fds${fd##*/} "; done
+    kill "$server_pid" 2>/dev/null
+    [ "$server_sid" != "$(printf '%s' "$caller_ids" | awk '{print $2}')" ] \
+      || fail "server_ensure left the server in the caller's session ($server_sid)"
+    [ "$fds" = "0 1 2 " ] || fail "server_ensure leaked caller descriptors into the server: $fds"
+  else
+    kill "$server_pid" 2>/dev/null
+  fi
+  [ "$(cat "$result")" = "rc=0" ] || fail "server_ensure cold start should succeed, got '$(cat "$result")'"
+  [ -n "$server_pgid" ] && [ "$server_pgid" != "$caller_pgid" ] \
+    || fail "server_ensure left the server in the caller's process group ($server_pgid)"
+  pass "fm_backend_herdr_server_ensure: a cold start returns promptly inside a redirected command substitution and detaches the server from the caller's session and descriptors"
+}
+
 test_container_ensure_reuses_existing_workspace() {
   local dir log resp fb out
   dir="$TMP_ROOT/container-reuse"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -5825,6 +5902,7 @@ test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_server_ensure_scrubs_home_and_harness_identity
+test_server_ensure_cold_start_detaches_from_the_caller
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label
