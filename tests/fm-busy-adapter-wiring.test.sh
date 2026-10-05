@@ -288,6 +288,113 @@ test_claude_hooks_stale_incarnation_harmless() {
   pass "claude hook events from a superseded incarnation are rejected without breaking the hook"
 }
 
+# run_firstmate_claude_hook <settings.json> <hook-event>: run the firstmate-owned
+# command for an event, selected by its busy-event writer rather than by
+# position, since a project's own hooks for the same event come first.
+run_firstmate_claude_hook() {
+  local cmd
+  cmd=$(jq -r --arg ev "$2" '[.hooks[$ev][].hooks[].command | select(contains("fm-busy-event.sh"))] | .[0] // empty' "$1")
+  [ -n "$cmd" ] || fail "no firstmate $2 hook command in $1"
+  sh -c "$cmd"
+}
+
+test_claude_untracked_settings_stay_excluded() {
+  local rec id=busy-cl-3 out exclude
+  rec=$(make_spawn_case claude-untracked claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  [ -z "$(git -C "$WT_DIR" ls-files -- .claude/settings.local.json)" ] \
+    || fail "the untracked fixture must stay untracked"
+  exclude=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  grep -qxF .claude/settings.local.json "$exclude" \
+    || fail "an untracked hook file must still be hidden through info/exclude"
+  [ -z "$(git -C "$WT_DIR" status --porcelain)" ] \
+    || fail "spawn left the worktree dirty: $(git -C "$WT_DIR" status --porcelain)"
+  pass "an untracked claude settings.local.json is still written whole and excluded"
+}
+
+test_claude_tracked_settings_merge_and_stay_clean() {
+  local rec id=busy-cl-4 out state settings committed
+  rec=$(make_spawn_case claude-tracked claude "$id")
+  read_case_record "$rec"
+  mkdir -p "$PROJ_DIR/.claude"
+  committed='{"permissions":{"allow":["Bash(make test)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true project-stop"}]}]}}'
+  printf '%s\n' "$committed" >"$PROJ_DIR/.claude/settings.local.json"
+  git -C "$PROJ_DIR" add -f .claude/settings.local.json
+  git -C "$PROJ_DIR" -c user.name=t -c user.email=t@t commit -qm "track claude settings"
+  git -C "$PROJ_DIR" push -q origin HEAD
+  git -C "$WT_DIR" reset -q --hard "$(git -C "$PROJ_DIR" rev-parse HEAD)"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  settings="$WT_DIR/.claude/settings.local.json"
+  [ -n "$(git -C "$WT_DIR" ls-files -- .claude/settings.local.json)" ] \
+    || fail "the worktree must still track the project's settings file"
+  [ -z "$(git -C "$WT_DIR" status --porcelain)" ] \
+    || fail "spawn left a tracked settings file dirty: $(git -C "$WT_DIR" status --porcelain)"
+  case "$(git -C "$WT_DIR" ls-files -v -- .claude/settings.local.json)" in
+    S\ *) ;;
+    *) fail "the task worktree must mark the tracked settings file skip-worktree" ;;
+  esac
+  case "$(git -C "$PROJ_DIR" ls-files -v -- .claude/settings.local.json)" in
+    H\ *) ;;
+    *) fail "spawn must not touch the primary checkout's index" ;;
+  esac
+  [ -z "$(git -C "$PROJ_DIR" status --porcelain)" ] || fail "spawn dirtied the primary checkout"
+  jq -e '.permissions.allow == ["Bash(make test)"]' "$settings" >/dev/null \
+    || fail "the project's own permissions must survive the merge"
+  jq -e '[.hooks.Stop[].hooks[].command] | index("true project-stop") == 0' "$settings" >/dev/null \
+    || fail "the project's own Stop hook must survive, ahead of firstmate's"
+  for ev in UserPromptSubmit Stop StopFailure SessionEnd; do
+    [ "$(jq --arg ev "$ev" '[.hooks[$ev][].hooks[].command | select(contains("fm-busy-event.sh"))] | length' "$settings")" = 1 ] \
+      || fail "the merged settings must carry exactly one firstmate $ev hook"
+  done
+  rm -f "$state/$id.turn-ended"
+  run_firstmate_claude_hook "$settings" Stop || fail "merged Stop hook command failed"
+  [ -f "$state/$id.turn-ended" ] || fail "the merged Stop hook no longer touches the notification marker"
+  out=$(classify claude "$id" "$state")
+  [ "$out" = "idle claude-hook" ] || fail "the merged Stop hook must classify idle, got '$out'"
+  run_firstmate_claude_hook "$settings" UserPromptSubmit || fail "merged UserPromptSubmit hook failed"
+  out=$(classify claude "$id" "$state")
+  [ "$out" = "busy claude-hook" ] || fail "the merged UserPromptSubmit hook must classify busy, got '$out'"
+
+  # Retirement restores the committed content and clears the bit, and a
+  # re-install merges from the committed copy, so hooks never stack.
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-claude-settings-lib.sh"
+    fm_claude_settings_retire "$WT_DIR"
+  ) || fail "retiring the tracked settings file failed"
+  [ "$(cat "$settings")" = "$committed" ] || fail "retirement must restore the committed settings content"
+  case "$(git -C "$WT_DIR" ls-files -v -- .claude/settings.local.json)" in
+    H\ *) ;;
+    *) fail "retirement must clear the skip-worktree bit" ;;
+  esac
+  [ -z "$(git -C "$WT_DIR" status --porcelain)" ] || fail "retirement left the worktree dirty"
+  printf 'worker edit\n' >"$settings"
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-claude-settings-lib.sh"
+    fm_claude_settings_retire "$WT_DIR"
+  ) || fail "retiring an unmarked tracked settings file failed"
+  [ "$(cat "$settings")" = "worker edit" ] || fail "retirement must never discard a worker's own uncommitted edit"
+  git -C "$WT_DIR" checkout -q -- .claude/settings.local.json
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-claude-settings-lib.sh"
+    # shellcheck disable=SC2329 # invoked indirectly by the install helper
+    noop_exclude() { :; }
+    fm_claude_settings_install "$WT_DIR" '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"fm-busy-event.sh again"}]}]}}' noop_exclude
+    fm_claude_settings_retire "$WT_DIR"
+    fm_claude_settings_install "$WT_DIR" '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"fm-busy-event.sh again"}]}]}}' noop_exclude
+  ) || fail "re-installing the tracked settings file failed"
+  [ "$(jq '[.hooks.Stop[].hooks[].command] | length' "$settings")" = 2 ] \
+    || fail "a re-install must merge from the committed copy, not stack hooks"
+  [ -z "$(git -C "$WT_DIR" status --porcelain)" ] || fail "a re-install left the worktree dirty"
+  pass "a tracked claude settings.local.json is merged, kept clean, and restored on retirement"
+}
+
 test_codex_unverified_until_a_semantic_source_exists() {
   local rec id=busy-cx-1 out state
   rec=$(make_spawn_case codex-unverified codex "$id")
@@ -429,6 +536,8 @@ test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
 test_claude_hooks_semantic_lifecycle
 test_claude_hooks_stale_incarnation_harmless
+test_claude_untracked_settings_stay_excluded
+test_claude_tracked_settings_merge_and_stay_clean
 test_gemini_hooks_semantic_lifecycle
 test_gemini_hooks_stale_incarnation_harmless
 test_raw_gemini_launch_has_no_semantic_wiring

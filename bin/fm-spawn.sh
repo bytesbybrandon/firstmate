@@ -625,6 +625,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-claude-settings-lib.sh
+. "$SCRIPT_DIR/fm-claude-settings-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -1431,6 +1433,10 @@ clear_relaunch_harness_wiring() {
   fi
   while IFS= read -r path; do
     [ -n "$path" ] || continue
+    if [ "$path" = "$wt/$FM_CLAUDE_SETTINGS_REL" ]; then
+      fm_claude_settings_retire "$wt" || return 1
+      continue
+    fi
     rm -f -- "$path" || return 1
   done <<EOF
 $(fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id")
@@ -2140,8 +2146,8 @@ launch_template() {
   # is trusted.
   # GEMINI_CLI_SYSTEM_SETTINGS_PATH points gemini at the firstmate-owned
   # per-task settings file written below. It is deliberately NOT the
-  # worktree's .gemini/settings.json: unlike claude's settings.local.json,
-  # that path is the PROJECT's own committed settings file, so writing it
+  # worktree's .gemini/settings.json: that path is the PROJECT's own
+  # committed settings file, so writing it
   # would clobber a project's configuration and removing it at teardown
   # would delete a tracked file. The system layer also makes the busy
   # contract independent of the trust decision above (its hooks were
@@ -4504,10 +4510,17 @@ if [ "$KIND" != secondmate ]; then
     j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-    cat >"$WT/.claude/settings.local.json" <<EOF
+    # bin/fm-claude-settings-lib.sh owns installing these into the worktree's
+    # settings.local.json, including a project's own committed copy.
+    claude_hooks=$(
+      cat <<EOF
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
-    exclude_path '.claude/settings.local.json'
+    )
+    fm_claude_settings_install "$WT" "$claude_hooks" exclude_path || {
+      echo "error: failed to install the claude worker hooks for $ID" >&2
+      exit 1
+    }
     ;;
   devin)
     if [ "$RAW_LAUNCH" -eq 0 ]; then
