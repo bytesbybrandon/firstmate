@@ -525,6 +525,7 @@ When the selected named server is not running, the adapter launches it without t
 - The supervision-model override.
 
 Herdr passes its server startup environment to every later pane, so retaining those values could misroute panes for another Firstmate home or harness.
+The launched server also keeps none of the caller's descriptors beyond stdio and runs in its own session, so a cold start inside a command substitution returns promptly and stopping the launching agent's process group never stops the server or the panes it hosts.
 An already-running server is reused without restart or environment changes.
 Explicit named-session routing and unrelated launch environment remain intact.
 
