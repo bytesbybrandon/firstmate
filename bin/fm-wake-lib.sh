@@ -1142,11 +1142,45 @@ fm_lock_reap_dead_link() {
   fm_lock_discard_owner "$tomb"
 }
 
+# fm_lock_reap_dead_dir <lockdir>
+# Remove a plain-directory lock whose recorded owner is dead. A plain directory
+# has no unique owner directory whose rename could elect one reaper, and once a
+# competing reaper removes it a successor's link can appear at the same path, so
+# the removal runs under the link-format reap mutex <lockdir>.reap and
+# re-verifies the directory and its dead owner there. A dead reap-mutex holder
+# is reaped as a link; a reap-mutex hold or plain-directory copy (an `ln -s`
+# that copies instead of linking) left by this very process is removed so it
+# cannot outlive the process and block every later reaper.
+fm_lock_reap_dead_dir() {
+  local lockdir=$1 reap pid current rc=1
+  [ -d "$lockdir" ] && [ ! -L "$lockdir" ] || return 1
+  pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  fm_lock_recheck_stale_owner "$lockdir" "" "$pid" || return 1
+  fm_current_pid current || return 1
+  reap="$lockdir.reap"
+  fm_lock_reap_dead_link "$reap" || true
+  if [ "$(cat "$reap/pid" 2>/dev/null || true)" = "$current" ]; then
+    fm_lock_remove_path "$reap" || true
+  fi
+  if fm_lock_try_create "$reap"; then
+    if [ -d "$lockdir" ] && [ ! -L "$lockdir" ] \
+      && fm_lock_recheck_stale_owner "$lockdir" "" "$pid"; then
+      fm_lock_remove_path "$lockdir" && rc=0
+    fi
+    fm_lock_release "$reap"
+  elif [ "$(cat "$reap/pid" 2>/dev/null || true)" = "$current" ]; then
+    fm_lock_remove_path "$reap" || true
+  fi
+  FM_LOCK_OWNER_DIR=
+  return "$rc"
+}
+
 # Acquire the short-lived steal mutex without recursively creating another
-# steal mutex. A dead holder is reaped once; a dead nested steal marker left by
-# the former recursive reclaim is reaped too so it cannot block the claim. A
-# hold abandoned by this very process (a trap interrupted its critical section)
-# is reclaimed like fm_lock_try_acquire's self-held branch.
+# steal mutex. A dead holder is reaped once, whether it holds the mutex as a
+# link or as a plain directory; a dead nested steal marker left by the former
+# recursive reclaim is reaped too so it cannot block the claim. A hold
+# abandoned by this very process (a trap interrupted its critical section) is
+# reclaimed like fm_lock_try_acquire's self-held branch.
 fm_lock_try_acquire_steal_mutex() {  # <steal-lock>
   local lockdir=$1 current
   FM_LOCK_OWNER_DIR=
@@ -1155,8 +1189,10 @@ fm_lock_try_acquire_steal_mutex() {  # <steal-lock>
   fm_lock_reap_dead_link "$lockdir.steal" || true
   if [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$current" ]; then
     fm_lock_remove_path "$lockdir" || true
-  elif [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
+  elif [ -L "$lockdir" ]; then
     fm_lock_reap_dead_link "$lockdir" || return 1
+  elif [ -e "$lockdir" ]; then
+    fm_lock_reap_dead_dir "$lockdir" || return 1
   fi
   fm_lock_try_create "$lockdir"
 }

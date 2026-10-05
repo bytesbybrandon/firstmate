@@ -505,6 +505,178 @@ test_lock_resumes_own_interrupted_steal_reap() {
   pass "a steal reap interrupted in this process is resumed from its own tombstone"
 }
 
+test_lock_reclaims_dead_plain_dir_steal_mutex() {
+  # A plain-directory steal mutex has no owner link to reap; one whose recorded
+  # owner is dead used to fail every acquire of its primary lock forever.
+  local shape dir state lockdir rc path
+  for shape in link-primary plain-primary; do
+    dir=$(make_case "lock-dead-plain-steal-$shape")
+    state="$dir/state"
+    lockdir="$state/.contend.lock"
+    if [ "$shape" = link-primary ]; then
+      leave_dead_link_locks "$state" "$lockdir"
+    else
+      mkdir "$lockdir"
+      printf '%s\n' "$(dead_pid)" > "$lockdir/pid"
+    fi
+    mkdir "$lockdir.steal"
+    printf '%s\n' "$(dead_pid)" > "$lockdir.steal/pid"
+
+    rc=0
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_lock_try_acquire "$2" || exit 8
+      [ "$(cat "$2/pid" 2>/dev/null)" = "${BASHPID:-$$}" ] || exit 9
+      fm_lock_release "$2"
+    ' _ "$LIB" "$lockdir" || rc=$?
+    [ "$rc" -eq 0 ] || fail "dead plain-directory steal mutex blocked a $shape lock (rc=$rc)"
+    for path in "$lockdir.steal" "$lockdir.steal.reap"; do
+      [ ! -e "$path" ] && [ ! -L "$path" ] || fail "$shape reclaim left $path behind"
+    done
+  done
+  pass "a dead plain-directory steal mutex is reclaimed"
+}
+
+test_lock_keeps_live_or_fresh_plain_dir_steal_mutex() {
+  local dir state lockdir live out
+  dir=$(make_case lock-live-plain-steal)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  mkdir "$lockdir"
+  printf '%s\n' "$(dead_pid)" > "$lockdir/pid"
+  sleep 300 &
+  live=$!
+  mkdir "$lockdir.steal"
+  printf '%s\n' "$live" > "$lockdir.steal/pid"
+  out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_try_acquire "$2"; then echo acquired; else echo refused; fi
+  ' _ "$LIB" "$lockdir")
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  [ "$out" = refused ] || fail "lock was stolen under a live plain-directory steal mutex: $out"
+  [ -d "$lockdir.steal" ] && [ ! -L "$lockdir.steal" ] \
+    && [ "$(cat "$lockdir.steal/pid" 2>/dev/null)" = "$live" ] \
+    || fail "live plain-directory steal mutex was reaped"
+
+  dir=$(make_case lock-fresh-empty-plain-steal)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  mkdir "$lockdir" "$lockdir.steal"
+  printf '%s\n' "$(dead_pid)" > "$lockdir/pid"
+  out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_try_acquire "$2"; then echo acquired; else echo refused; fi
+  ' _ "$LIB" "$lockdir")
+  [ "$out" = refused ] || fail "fresh mid-acquire plain-directory steal mutex was reaped: $out"
+  [ -d "$lockdir.steal" ] || fail "fresh mid-acquire plain-directory steal mutex was removed"
+  pass "a live or fresh mid-acquire plain-directory steal mutex is not reaped"
+}
+
+test_lock_plain_dir_steal_reap_cannot_remove_successor() {
+  # Two reapers verify the same dead plain-directory steal mutex. The
+  # competitor reaps it and takes the mutex as a live link exactly when the
+  # first one is about to take the reap mutex; the first must leave that
+  # successor's link and owner intact.
+  local dir state steal fakebin out rc winner real_mktemp
+  real_mktemp=$(command -v mktemp)
+  dir=$(make_case lock-plain-steal-reap-race)
+  state="$dir/state"
+  steal="$state/.contend.lock.steal"
+  fakebin="$dir/fakebin"
+  out="$dir/competitor"
+  mkdir "$steal"
+  printf '%s\n' "$(dead_pid)" > "$steal/pid"
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+last=
+for arg do last=$arg; done
+case "$last" in
+  *.contend.lock.steal.reap.owner.*)
+    if mkdir "$FM_TEST_RACE_ONCE" 2>/dev/null; then
+      bash -c '
+        . "$1"
+        if fm_lock_try_acquire_steal_mutex "$2"; then
+          printf "won %s\n" "${BASHPID:-$$}" > "$3"
+          exec sleep 30
+        fi
+        printf "lost\n" > "$3"
+      ' _ "$FM_TEST_LIB" "$FM_TEST_RACE_PATH" "$FM_TEST_RACE_OUT" >/dev/null 2>&1 &
+      i=0
+      while [ "$i" -lt 100 ] && [ ! -s "$FM_TEST_RACE_OUT" ]; do
+        sleep 0.05
+        i=$((i + 1))
+      done
+    fi
+    ;;
+esac
+exec "$FM_TEST_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fakebin/mktemp"
+
+  rc=0
+  PATH="$fakebin:$PATH" FM_TEST_LIB="$LIB" FM_TEST_RACE_PATH="$steal" \
+    FM_TEST_REAL_MKTEMP="$real_mktemp" \
+    FM_TEST_RACE_ONCE="$dir/race-once" FM_TEST_RACE_OUT="$out" \
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_lock_try_acquire_steal_mutex "$2" || exit 1
+    ' _ "$LIB" "$steal" || rc=$?
+  [ -d "$dir/race-once" ] || fail "plain-directory reap race hook never fired"
+  case "$(cat "$out" 2>/dev/null || true)" in
+    won\ *) winner=$(sed 's/^won //' "$out") ;;
+    *) fail "competing reaper did not win the dead plain-directory steal mutex" ;;
+  esac
+  [ "$rc" -ne 0 ] || fail "both reapers hold the plain-directory steal mutex"
+  [ -L "$steal" ] && [ "$(cat "$steal/pid" 2>/dev/null)" = "$winner" ] \
+    || fail "the successor's steal mutex was removed or rewritten by the losing reaper"
+  kill -KILL "$winner" 2>/dev/null || true
+  pass "a losing reaper cannot remove the successor of a plain-directory steal mutex"
+}
+
+test_lock_recovers_after_copying_ln_holder() {
+  # An `ln -s` that copies instead of linking (the MSYS2 and Git-for-Windows
+  # default without native symlinks) leaves plain-directory primary and steal
+  # locks owned by processes that then exit. A later ordinary acquirer must
+  # reclaim both, and a copying process must not leave a reap mutex behind.
+  local dir state lockdir fakebin i rc path
+  dir=$(make_case lock-copying-ln)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  fakebin="$dir/fakebin"
+  cat > "$fakebin/ln" <<'SH'
+#!/usr/bin/env bash
+args=()
+for arg do case "$arg" in -*) ;; *) args+=("$arg") ;; esac; done
+[ ! -e "${args[1]}" ] || exit 1
+exec cp -R "${args[0]}" "${args[1]}"
+SH
+  chmod +x "$fakebin/ln"
+  i=0
+  while [ "$i" -lt 3 ]; do
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_lock_try_acquire "$2"
+    ' _ "$LIB" "$lockdir" >/dev/null 2>&1 || true
+    i=$((i + 1))
+  done
+  [ -d "$lockdir.steal" ] && [ ! -L "$lockdir.steal" ] \
+    || fail "copying ln did not leave the plain-directory steal mutex this case needs"
+  [ ! -e "$lockdir.steal.reap" ] || fail "a copying process left a reap mutex behind"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 8
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" || rc=$?
+  [ "$rc" -eq 0 ] || fail "locks left by a copying ln blocked the next acquirer (rc=$rc)"
+  for path in "$lockdir" "$lockdir.steal" "$lockdir.steal.reap"; do
+    [ ! -e "$path" ] && [ ! -L "$path" ] || fail "copying-ln recovery left $path behind"
+  done
+  pass "locks left behind by a copying ln are reclaimed"
+}
+
 test_lock_steal_reap_cannot_remove_successor() {
   # Two reapers verify the same dead steal owner. The competitor runs to
   # completion exactly when the first one is about to remove the link; at most
@@ -1565,6 +1737,10 @@ test_lock_recovers_dead_nested_steal_chain
 test_lock_steal_reap_cannot_remove_successor
 test_lock_reclaims_self_held_steal_mutex
 test_lock_resumes_own_interrupted_steal_reap
+test_lock_reclaims_dead_plain_dir_steal_mutex
+test_lock_keeps_live_or_fresh_plain_dir_steal_mutex
+test_lock_plain_dir_steal_reap_cannot_remove_successor
+test_lock_recovers_after_copying_ln_holder
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
