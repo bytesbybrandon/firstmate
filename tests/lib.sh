@@ -68,6 +68,28 @@ unset FM_TASK_ID
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 
+# fm_test_scrub_wsl_env: make a suite that drives real Linux harness binaries
+# (Pi in tmux) behave as it does on a non-WSL host. Under WSL, Pi changes its
+# terminal handling when WSL_DISTRO_NAME or WSL_INTEROP is set, and the
+# Windows drive mounts on PATH can resolve `pi` or `opencode` to the Windows
+# builds through interop. Where either WSL variable is present this unsets both
+# and drops /mnt/<drive> PATH entries; elsewhere it changes nothing. Call it
+# before fm_live_gate so tool detection sees the scrubbed PATH.
+fm_test_scrub_wsl_env() {
+  local entry kept='' on_wsl=0
+  { [ -n "${WSL_DISTRO_NAME+x}" ] || [ -n "${WSL_INTEROP+x}" ]; } && on_wsl=1
+  unset WSL_DISTRO_NAME WSL_INTEROP
+  [ "$on_wsl" = 1 ] || return 0
+  while IFS= read -r -d ':' entry; do
+    case "$entry" in
+      /mnt/[a-zA-Z] | /mnt/[a-zA-Z]/*) ;;
+      *) kept=${kept:+$kept:}$entry ;;
+    esac
+  done <<< "$PATH:"
+  PATH=$kept
+  export PATH
+}
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

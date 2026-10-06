@@ -1,2 +1,9 @@
 # Bash parses shell scripts with LF line endings on every supported platform.
 *.sh text eol=lf
+# Test fixtures and the markdown/jq files that tests read line by line must not
+# pick up CRLF from a contributor's core.autocrlf (for example a Windows-drive
+# worktree under WSL). Only these paths are pinned; nothing else is renormalized.
+tests/** text eol=lf
+*.md text eol=lf
+*.jq text eol=lf
+.gitattributes text eol=lf

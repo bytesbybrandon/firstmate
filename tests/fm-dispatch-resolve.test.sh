@@ -12,6 +12,10 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# A real TYPESAFE_API_KEY in the operator's shell would switch the tool under
+# test on and reach the live service; every case sets the key it wants itself.
+unset TYPESAFE_API_KEY TYPESAFE_API_KEY_PRIVATE
+
 TOOL="$ROOT/bin/fm-dispatch-resolve.sh"
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-resolve)
 HOME_DIR="$TMP_ROOT/home"

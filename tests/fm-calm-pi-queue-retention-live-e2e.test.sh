@@ -19,6 +19,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_test_scrub_wsl_env
 
 fm_live_gate default-on FM_CALM_PI_QUEUE_RETENTION_LIVE pi tmux node
 

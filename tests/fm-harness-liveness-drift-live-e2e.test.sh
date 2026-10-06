@@ -33,6 +33,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_test_scrub_wsl_env
 
 fm_live_gate default-on FM_HARNESS_LIVENESS_DRIFT tmux
 
