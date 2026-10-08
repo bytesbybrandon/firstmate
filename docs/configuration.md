@@ -1425,7 +1425,7 @@ If the session or watcher stops, its next check catches up with the latest due d
 It does not start a session or send mail while the session is stopped.
 
 The script prints one due line per eligible date and journals its wake before suppressing repeat output.
-The session composes and sends the plain-text report using the [`daily-report` skill](../.agents/skills/daily-report/SKILL.md), which owns wake handling and uncertain-delivery reconciliation.
+The session composes and sends the HTML report with a plain-text alternative using the [`daily-report` skill](../.agents/skills/daily-report/SKILL.md), which owns wake handling and uncertain-delivery reconciliation.
 The script's header and `--help` own commands and state mechanics.
 Run `bash bin/fm-test-run.sh tests/fm-daily-report.test.sh` to verify scheduling, catch-up, registration, and duplicate suppression.
 

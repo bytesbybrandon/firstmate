@@ -21,11 +21,17 @@ The journaled wake and the watcher's captured-output wake may both appear for on
 2. On a due wake, inspect that date with `FM_HOME="$FM_HOME" bash bin/fm-daily-report.sh status YYYY-MM-DD`.
    A `sent` record is already handled.
    A `sending` record requires the reconciliation below; never send again just because the wake was replayed.
-3. For a pending date, compose a plain-text email from current fleet state and recorded outcomes since the last confirmed report, including any gap caused by a stopped session.
+3. For a pending date, compose an HTML email with a matching plain-text alternative from current fleet state and recorded outcomes since the last confirmed report, including any gap caused by a stopped session.
    Use the structured fleet view and targeted reconciliation rather than treating status tails as current truth.
    Put critical or urgent items first, followed by what went out (with full PR or deployment URLs), what to verify by hand (concrete steps and expected results), what is in progress, and what needs the captain (the decision and consequence of waiting).
    Keep empty sections short and state material uncertainty plainly.
-   Save the body and the supporting delivery evidence in the home's private `data/daily-reports/YYYY-MM-DD/` directory.
+   Give the report a clear title and report date, and use inline styles only, with no external CSS, images, or scripts.
+   Highlight critical or urgent items and items needing the captain in a top summary, while retaining the detailed sections in the order above.
+   Use short section headings and readable tables or bullet lists for the remaining content.
+   Make full PR and deployment URLs clickable links in HTML and retain the full URLs in plain text.
+   Give each shipped item a short verify-by-hand column or line with concrete steps and expected results, keeping the dedicated verification section above.
+   Keep the same facts, decisions, links, and verification guidance in both versions, and never include secrets in either version or supporting evidence.
+   Save both bodies and the supporting delivery evidence in the home's private `data/daily-reports/YYYY-MM-DD/` directory.
 4. Resolve the captain's recipient and approved sending tool from the home's preferences and available tools before claiming.
    If either is missing, keep the report pending, record the missing information as an open captain call, and acknowledge the wake only after that follow-up is durable.
    A configured schedule authorizes its daily email through the established recipient and tool; do not ask for approval on every report.
@@ -34,7 +40,8 @@ The journaled wake and the watcher's captured-output wake may both appear for on
 5. Immediately before sending the daily email, run `FM_HOME="$FM_HOME" bash bin/fm-daily-report.sh claim YYYY-MM-DD`.
    Send only when that invocation exits zero and prints `claimed: YYYY-MM-DD`.
    Exit 3 means disabled, already claimed, or already sent; inspect rather than sending.
-6. Send once with the session's established mail tool, retain its confirmation or message identifier with the saved body, then run `FM_HOME="$FM_HOME" bash bin/fm-daily-report.sh sent YYYY-MM-DD`.
+6. Send once with the session's established mail tool, passing the HTML report in `htmlBody` and its plain-text alternative in `body` in the same email call.
+   Retain its confirmation or message identifier with both saved bodies, then run `FM_HOME="$FM_HOME" bash bin/fm-daily-report.sh sent YYYY-MM-DD`.
    Acknowledge the wake after the confirmed delivery and durable `sent` record, or after recording a durable unresolved follow-up.
 
 ## Interrupted or uncertain delivery
