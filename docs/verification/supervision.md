@@ -6,6 +6,34 @@ This record supports current session-start, turn-end, watcher-continuity, superv
 Operator behavior and active limits remain in the linked current guides.
 Task-specific chronology, temporary paths, run identifiers, and delivery transcripts remain in private reports or PR evidence.
 
+## Daily report custom check
+
+Verified on 2026-10-08 with GNU Bash 5.2.21(1)-release on Linux through the executable schedule and a real watcher checkpoint over a temporary home.
+The test substitutes the wall clock, but registration, hash-validated check execution, wake publication, drain, and send-state transitions use production scripts.
+
+```sh
+bash bin/fm-test-run.sh tests/fm-daily-report.test.sh
+```
+
+Observed assertions:
+
+```text
+ok - disabled checks are silent and malformed schedules are actionable
+ok - default 18:07 gate emits once and re-arming retains history
+ok - custom threshold, latest-day catch-up, DST, and year rollover converge
+ok - overlapping checks and send claims elect one sender and preserve uncertainty
+ok - wake survives interrupted publication and unsafe send records fail closed
+ok - real watcher executes the registered snapshot and replay cannot resend
+```
+
+The integration review followed `bin/fm-supervision-instructions.sh` and every `docs/supervision-protocols/` entry: Claude, Codex, Cursor, Grok, OpenCode, omp, Pi, and pi-signed ultimately use the shared watcher; other primary harnesses use its generic bounded-wait guidance.
+The custom-check sweep precedes backend-specific endpoint polling in `bin/fm-watch.sh`, and `bin/fm-supervision-lib.sh` counts its trust binding as an existing supervision reason.
+The backend review inspected `bin/fm-backend.sh` and the watcher's dispatch seam for tmux, Herdr, Zellij, Orca, and cmux; daily scheduling introduces no endpoint or backend operation.
+Codex App remains outside the known backend set rather than gaining support through this check.
+These are code-path observations, not new live harness or backend verification claims.
+The date-specific journal keys retain distinct days through a delayed drain; replayed rows for one date still permit only one send claim.
+No email transport is exercised; [`daily-report`](../../.agents/skills/daily-report/SKILL.md) owns session-side delivery and uncertain-result reconciliation.
+
 ## Native session-start delivery
 
 The cross-harness transport pass ran on 2026-07-17 with Codex 0.144.4, Grok 0.2.103, OpenCode 1.17.18, Pi 0.80.10, and the tracked Claude hook wiring.

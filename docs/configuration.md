@@ -1405,6 +1405,30 @@ Arm the check once per home with `bin/fm-tool-update-check.sh arm`.
 - So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 - A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Daily report (config/daily-report)
+
+The daily report schedule is off unless this home opts in.
+Create the gitignored `config/daily-report` file with one line: `on` for the default 18:07 local time, `HH:MM` for another time in 24-hour format, or `off` to disable.
+No recipient, credential, or mail transport is stored in this file.
+The recipient and sending tool come from the home's existing captain preferences and session tools.
+
+Arm it with `FM_HOME=/absolute/home bash bin/fm-daily-report.sh arm`.
+This registers a custom check with the existing watcher and keeps supervision required even when no task is live.
+Changing the time needs no re-arm; moving the code root does.
+Use `disarm` to remove the registered check and its reason to keep watching; history is retained across disarm and re-arm to prevent duplicate reports.
+Deleting the configuration or setting `off` also suppresses future checks and send claims.
+
+The watcher checks on its normal slow-check cadence, so the time is a threshold rather than an exact delivery appointment.
+Local time uses the watcher process's timezone, including an explicitly configured `TZ`; calendar-date records prevent a repeated DST hour from scheduling a second report.
+Before today's threshold, the latest due date is yesterday; the first arming date is the earliest eligible date, so initial setup never schedules an older report.
+If the session or watcher stops, its next check catches up with the latest due date and coalesces intervening days that never produced wakes.
+It does not start a session or send mail while the session is stopped.
+
+The script prints one due line per eligible date and journals its wake before suppressing repeat output.
+The session composes and sends the plain-text report using the [`daily-report` skill](../.agents/skills/daily-report/SKILL.md), which owns wake handling and uncertain-delivery reconciliation.
+The script's header and `--help` own commands and state mechanics.
+Run `bash bin/fm-test-run.sh tests/fm-daily-report.test.sh` to verify scheduling, catch-up, registration, and duplicate suppression.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.
