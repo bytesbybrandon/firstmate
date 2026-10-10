@@ -726,6 +726,39 @@ SH
   pass "the clone-root guard accepts a root named by a different spelling of the same directory"
 }
 
+test_validation_remote_agreement_precedes_clone_refresh() {
+  local home clone gate fakebin alias out before remote_before
+  home=$(new_home)
+  clone=$(build_pair "$home" validation-path)
+  gate="$home/staging-one"
+  mkdir -p "$gate" "$home/staging-two"
+  fakebin=$(fm_fakebin "$home/validation-fake")
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = status ] || exit 2
+pwd -P >> "$FM_PATH_CWD_LOG"
+printf 'gate: %s\n' "$FM_PATH_GATE"
+SH
+  chmod +x "$fakebin/no-mistakes"
+  git -C "$clone" remote add no-mistakes "$gate"
+  alias="$home/PROJECT-ALIAS"
+  ln -s "$clone" "$alias"
+  advance_origin "$home" validation-path C1
+  out=$(PATH="$fakebin:$PATH" FM_PATH_GATE="$gate" FM_PATH_CWD_LOG="$home/cwd-log" run_sync "$home" "$alias")
+  assert_contains "$out" 'synced' "consistent gate prevented refresh"
+  [ "$(cat "$home/cwd-log")" = "$clone" ] || fail "refresh queried validation through an alias"
+  advance_origin "$home" validation-path C2
+  before=$(head_sha "$clone")
+  remote_before=$(git -C "$clone" rev-parse origin/main)
+  git -C "$clone" remote set-url no-mistakes "$home/staging-two"
+  out=$(PATH="$fakebin:$PATH" FM_PATH_GATE="$gate" FM_PATH_CWD_LOG="$home/cwd-log" run_sync "$home" "$alias")
+  assert_contains "$out" 'STUCK: error: validation remote disagreement' "refresh hid validation disagreement"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "refusal advanced the local branch"
+  [ "$(git -C "$clone" rev-parse origin/main)" = "$remote_before" ] || fail "refusal fetched origin"
+  [ "$(git -C "$clone" remote get-url no-mistakes)" = "$home/staging-two" ] || fail "refresh repaired the remote"
+  pass "refresh canonicalizes aliases and stops on validation disagreement before fetch or ref changes"
+}
+
 test_non_signature_fetch_failure_is_not_retried() {
   local home fakebin clone out err
   home=$(new_home)
@@ -774,3 +807,4 @@ test_non_clone_dir_never_syncs_the_enclosing_repo
 test_non_clone_dir_named_directly_never_syncs_the_enclosing_repo
 test_symlinked_clone_still_syncs
 test_clone_root_named_by_another_spelling_still_syncs
+test_validation_remote_agreement_precedes_clone_refresh

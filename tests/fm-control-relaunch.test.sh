@@ -364,6 +364,45 @@ SH
 
 # --- 1. same-harness relaunch -----------------------------------------------
 
+test_relaunch_canonicalizes_aliases_and_refuses_validation_drift_before_exit() {
+  local dir out rc gate meta_before brief_before
+  dir=$(new_case validation-path)
+  add_ship_task "$dir" rlpath
+  [ -d "$dir/PROJ" ] || ln -s "$dir/proj" "$dir/PROJ"
+  [ -d "$dir/WT" ] || ln -s "$dir/wt" "$dir/WT"
+  sed "s|project=$dir/proj|project=$dir/PROJ|;s|worktree=$dir/wt|worktree=$dir/WT|" \
+    "$dir/home/state/rlpath.meta" > "$dir/alias.meta"
+  mv "$dir/alias.meta" "$dir/home/state/rlpath.meta"
+  gate="$dir/staging-one"
+  mkdir -p "$gate" "$dir/staging-two"
+  git -C "$dir/proj" remote add no-mistakes "$gate"
+  cat > "$dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = status ] || exit 2
+printf 'gate: %s\n' "$FM_PATH_GATE"
+SH
+  chmod +x "$dir/fakebin/no-mistakes"
+  out=$(FM_PATH_GATE="$gate" run_control "$dir" rlpath relaunch --note "continue through aliases"); rc=$?
+  expect_code 0 "$rc" "consistent validation through aliases should relaunch"
+  [ "$(meta_field "$dir" rlpath project)" = "$dir/proj" ] || fail "project alias survived relaunch"
+  [ "$(meta_field "$dir" rlpath worktree)" = "$dir/wt" ] || fail "worktree alias survived relaunch"
+
+  : > "$dir/fake/literal"
+  git -C "$dir/proj" config extensions.worktreeConfig true
+  git -C "$dir/wt" config --worktree remote.no-mistakes.url "$dir/staging-two"
+  meta_before=$(cat "$dir/home/state/rlpath.meta")
+  brief_before=$(cat "$dir/home/data/rlpath/brief.md")
+  printf 'unlanded\n' > "$dir/wt/uncommitted.txt"
+  out=$(FM_PATH_GATE="$gate" run_control "$dir" rlpath relaunch --note "must refuse"); rc=$?
+  [ "$rc" -ne 0 ] || fail "relaunch accepted a worktree validation disagreement"
+  assert_contains "$out" 'validation remote disagreement' "relaunch hid the disagreement"
+  assert_no_grep '/exit' "$dir/fake/literal" "refusal stopped the running agent"
+  [ "$(cat "$dir/home/state/rlpath.meta")" = "$meta_before" ] || fail "refusal changed the task record"
+  [ "$(cat "$dir/home/data/rlpath/brief.md")" = "$brief_before" ] || fail "refusal edited the brief"
+  [ "$(cat "$dir/wt/uncommitted.txt")" = unlanded ] || fail "refusal lost unlanded work"
+  pass "relaunch uses canonical paths and refuses validation drift before agent exit or note edits"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   local dir out rc gen_before gen_after
   dir=$(new_case same rl1)
@@ -2440,6 +2479,7 @@ SH
 
 test_exit_and_relaunch_remove_the_dialog_file
 test_exit_removes_the_dialog_file_before_releasing_the_lock
+test_relaunch_canonicalizes_aliases_and_refuses_validation_drift_before_exit
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven

@@ -37,6 +37,9 @@ make_settle_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+if [ -n "${FM_PATH_TMUX_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$FM_PATH_TMUX_LOG"
+fi
 case "$*" in
   *"#{pane_current_path}"*)
     countfile="${FM_FAKE_PANE_COUNTFILE:?FM_FAKE_PANE_COUNTFILE unset}"
@@ -189,6 +192,9 @@ test_transient_primary_checkout_is_not_accepted() {
   read_settle_record "$rec"
   fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
+  # Use a native case alias where available, and a symlink on portable CI.
+  [ -d "${STALE_DIR%/*}/PRIMARY" ] || ln -s "$STALE_DIR" "${STALE_DIR%/*}/PRIMARY"
+  STALE_DIR="${STALE_DIR%/*}/PRIMARY"
   out=$(run_settle_spawn "$id")
   status=$?
   expect_code 0 "$status" "spawn should succeed once the pane leaves the primary checkout"$'\n'"$out"
@@ -207,6 +213,8 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   rec=$(make_primary_case settle-primary-stuck "$id" 100000)
   read_settle_record "$rec"
   fm_test_fake_sleep_noop "$FAKEBIN_DIR"
+  [ -d "${STALE_DIR%/*}/PRIMARY" ] || ln -s "$STALE_DIR" "${STALE_DIR%/*}/PRIMARY"
+  STALE_DIR="${STALE_DIR%/*}/PRIMARY"
 
   out=$(run_settle_spawn "$id")
   status=$?
@@ -221,6 +229,59 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   pass "a pane stuck on the primary checkout fails loudly at the deadline"
 }
 
+test_path_aliases_record_and_launch_the_canonical_copy() {
+  local rec id out rc project worktree
+  id=settle-path-alias-z1
+  rec=$(make_settle_case path-alias "$id" 0)
+  read_settle_record "$rec"
+  project=$PROJ_DIR worktree=$WT_DIR
+  [ -d "${project%/*}/PROJECT" ] || ln -s "$project" "${project%/*}/PROJECT"
+  [ -d "${worktree%/*}/WT" ] || ln -s "$worktree" "${worktree%/*}/WT"
+  PROJ_DIR="${project%/*}/PROJECT" WT_DIR="${worktree%/*}/WT"
+  out=$(FM_PATH_TMUX_LOG="$HOME_DIR/tmux-log" run_settle_spawn "$id"); rc=$?
+  expect_code 0 "$rc" "spawn through path aliases should succeed"
+  [ "$(sed -n 's/^project=//p' "$HOME_DIR/state/$id.meta")" = "$project" ] || fail "project alias persisted"
+  [ "$(sed -n 's/^worktree=//p' "$HOME_DIR/state/$id.meta")" = "$worktree" ] || fail "worktree alias persisted"
+  assert_contains "$(cat "$HOME_DIR/tmux-log")" "cd -- '$worktree'" "launch did not enter the canonical copy"
+  pass "spawn records stored project and isolated worktree spelling"
+}
+
+test_validation_disagreement_stops_before_launch() {
+  local where rec id out rc gate log
+  for where in project worktree; do
+    id="settle-gate-$where-z1"
+    rec=$(make_settle_case "gate-$where" "$id" 0)
+    read_settle_record "$rec"
+    gate="$HOME_DIR/staging-one"
+    mkdir -p "$gate" "$HOME_DIR/staging-two"
+    if [ "$where" = project ]; then
+      git -C "$PROJ_DIR" remote add no-mistakes "$HOME_DIR/staging-two"
+    else
+      git -C "$PROJ_DIR" config extensions.worktreeConfig true
+      git -C "$WT_DIR" config --worktree remote.no-mistakes.url "$HOME_DIR/staging-two"
+    fi
+    cat > "$FAKEBIN_DIR/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = status ] || exit 2
+printf 'gate: %s\n' "$FM_PATH_GATE"
+SH
+    chmod +x "$FAKEBIN_DIR/no-mistakes"
+    log="$HOME_DIR/tmux-log"
+    out=$(FM_PATH_GATE="$gate" FM_PATH_TMUX_LOG="$log" run_settle_spawn "$id"); rc=$?
+    [ "$rc" -ne 0 ] || fail "spawn accepted a $where validation disagreement"
+    assert_contains "$out" 'validation remote disagreement' "spawn hid the refusal"
+    assert_absent "$HOME_DIR/state/$id.meta" "refused spawn published a worker"
+    if [ "$where" = project ]; then
+      [ ! -f "$log" ] || assert_no_grep 'new-window' "$log" "refusal created an endpoint"
+    else
+      assert_no_grep 'encode launch-brief' "$log" "refusal launched an agent"
+    fi
+  done
+  pass "project and acquired worktree validation disagreements stop before agent launch"
+}
+
+test_path_aliases_record_and_launch_the_canonical_copy
+test_validation_disagreement_stops_before_launch
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read
 test_transient_primary_checkout_is_not_accepted
