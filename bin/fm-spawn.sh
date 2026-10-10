@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
+# Project and task checkout paths use their stored filesystem spelling; an
+# existing validation remote must agree with the CLI's resolved staging repo
+# before launch (bin/fm-project-path-lib.sh).
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
@@ -651,6 +654,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-project-path-lib.sh
+. "$SCRIPT_DIR/fm-project-path-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -3052,7 +3057,18 @@ if [ "$KIND" = secondmate ]; then
     BRIEF="$DATA/$ID/brief.md"
   fi
 else
-  PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
+  PROJ_ABS=$(fm_project_canonical_dir "$(resolve_project_dir_arg "$PROJ")") || {
+    echo "error: cannot resolve the stored project path for '$PROJ'" >&2
+    exit 1
+  }
+  fm_project_validation_remote_check "$PROJ_ABS" || exit 1
+  if [ "$RELAUNCH" -eq 1 ]; then
+    RELAUNCH_WT=$(fm_project_canonical_dir "$RELAUNCH_WT") || {
+      echo "error: cannot resolve task $ID's recorded worktree path" >&2
+      exit 1
+    }
+    fm_project_validation_remote_check "$RELAUNCH_WT" || exit 1
+  fi
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
@@ -3237,8 +3253,8 @@ fi
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
 BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 
-# PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
-# /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
+# A secondmate home can still carry a symlinked path component (e.g. macOS's
+# /tmp -> /private/tmp); ship/scout project paths are already canonical above.
 # Every backend's own current-path read (tmux's pane_current_path, herdr's
 # foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
 # report the OS-level, physically-resolved cwd, so comparing it against a
@@ -3251,7 +3267,7 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 
 real_path_or_raw() { # <path>
   local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+  if real=$(fm_project_canonical_dir "$path"); then
     printf '%s\n' "$real"
   else
     printf '%s\n' "$path"
@@ -3308,11 +3324,11 @@ spawn_worktree_isolated() { # <path>
     SPAWN_WT_REASON="it is not inside a git worktree"
     return 1
   fi
-  if [ "$wt_real" != "$wt_top_real" ]; then
+  if ! [ "$wt_real" -ef "$wt_top_real" ]; then
     SPAWN_WT_REASON="it is a subdirectory of worktree root '$wt_top_real', not a worktree root"
     return 1
   fi
-  if [ "$wt_real" = "$PROJ_ABS_REAL" ]; then
+  if [ "$wt_real" -ef "$PROJ_ABS_REAL" ]; then
     SPAWN_WT_REASON="it is the spawning project itself"
     return 1
   fi
@@ -3327,7 +3343,7 @@ spawn_worktree_isolated() { # <path>
     SPAWN_WT_REASON="its git directory could not be resolved"
     return 1
   fi
-  if [ "$wt_git_dir" = "$proj_common" ]; then
+  if [ "$wt_git_dir" -ef "$proj_common" ]; then
     SPAWN_WT_REASON="it is the repository's primary checkout (its git dir is the spawning project's common git dir)"
     return 1
   fi
@@ -4393,6 +4409,13 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     fi
     SPAWN_SLOT_CLAIMED=1
   fi
+fi
+if [ "$KIND" != secondmate ]; then
+  WT=$(fm_project_canonical_dir "$WT") || {
+    echo "error: cannot resolve task $ID's isolated worktree path" >&2
+    exit 1
+  }
+  fm_project_validation_remote_check "$WT" || exit 1
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" || exit 1

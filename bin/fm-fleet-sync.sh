@@ -27,6 +27,8 @@
 # it is retried with a bounded wait and removed only when provably stale; see
 # fetch_with_packed_refs_lock_guard and the FM_FLEET_SYNC_PACKED_REFS_LOCK_* knobs.
 # Usage: fm-fleet-sync.sh [<project-dir-or-name>]
+# Uses stored project-path spelling and refuses a validation-remote disagreement
+# before fetching or moving refs (bin/fm-project-path-lib.sh).
 # The single-project form accepts either a path (absolute, or relative to the
 # caller's cwd) or a bare "<name>"/"projects/<name>" form, resolved against
 # this home's projects dir ($FM_HOME/projects, or $FM_PROJECTS_OVERRIDE).
@@ -42,6 +44,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-project-path-lib.sh
+. "$SCRIPT_DIR/fm-project-path-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
@@ -335,6 +339,15 @@ sync_project() {
   mode=${mode_line%% *}
   if [ "$mode" = "local-only" ]; then
     echo "$label: skipped: local-only project"
+    return 0
+  fi
+  PROJ=$(fm_project_canonical_dir "$PROJ") || {
+    echo "$label: STUCK: cannot resolve stored project-path spelling - needs attention"
+    return 0
+  }
+  local validation_error
+  if ! validation_error=$(fm_project_validation_remote_check "$PROJ" 2>&1); then
+    echo "$label: STUCK: $validation_error - needs attention"
     return 0
   fi
   if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then

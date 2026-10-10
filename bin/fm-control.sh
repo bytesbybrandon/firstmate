@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # fm-control.sh - the CONTROL PLANE for a firstmate-owned agent: allowlisted
 # lifecycle verbs addressed to an exact task id.
+# Relaunch normalizes project checkout spelling and checks validation-remote
+# agreement before stopping an agent (bin/fm-project-path-lib.sh).
 #
 # Usage: fm-control.sh <task-id> interrupt
 #        fm-control.sh <task-id> exit
@@ -916,7 +918,7 @@ safe_checkpoint() {
   wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) \
     || die "task $ID's recorded worktree $WT is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for"
   wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P) || wt_top_real=$wt_top
-  [ "$wt_real" = "$wt_top_real" ] \
+  [ "$wt_real" -ef "$wt_top_real" ] \
     || die "task $ID's recorded worktree $WT is not a worktree root (root is $wt_top); refusing to relaunch against an ambiguous checkout"
   if head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null); then
     :
@@ -1007,6 +1009,20 @@ do_relaunch() {
 
   require_state_verified_backend relaunch
   resolve_relaunch_profile
+
+  if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
+    local project
+    # The launch owner repeats these checks, but reaching it costs the old
+    # agent. Refuse a known disagreement before recording a note or exiting.
+    # shellcheck source=bin/fm-project-path-lib.sh
+    . "$SCRIPT_DIR/fm-project-path-lib.sh"
+    project=$(fm_project_canonical_dir "$(fm_meta_get "$META" project)") \
+      || die "task $ID's recorded project path cannot be resolved"
+    WT=$(fm_project_canonical_dir "$WT") \
+      || die "task $ID's recorded worktree path cannot be resolved"
+    fm_project_validation_remote_check "$project" || exit 1
+    fm_project_validation_remote_check "$WT" || exit 1
+  fi
 
   case "$KIND" in
     ship|scout)

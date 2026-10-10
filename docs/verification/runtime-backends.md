@@ -6,6 +6,27 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Project path spelling at launch and recovery
+
+`bin/fm-project-path-lib.sh` owns stored pathname resolution and validation-remote agreement for spawn, relaunch and clone refresh.
+Verified on 2026-10-10 with Bash 5.2.21, Git 2.43.0, Perl 5.38.2 and no-mistakes 1.84.0 on Linux, including a case-insensitive WSL drive mount.
+On that mount, `pwd -P` and `realpath` retain caller casing; resolving stored directory entries makes uppercase and lowercase aliases converge while distinct repositories on a case-sensitive filesystem remain distinct.
+The real no-mistakes `status` command against an isolated registration fixture selected different staging repositories through case aliases, and the agreement check refused the conflicting target without changing either registration or remote.
+Relative `NM_HOME` staging paths also passed the check.
+
+Refresh and launch regressions:
+
+```sh
+bin/fm-test-run.sh tests/fm-project-path.test.sh tests/fm-spawn-worktree-settle.test.sh tests/fm-control-relaunch.test.sh tests/fm-fleet-sync.test.sh
+```
+
+The path suite reports `ok - native uppercase/lowercase paths converge to stored spelling` when its temporary directory is on a case-insensitive volume, and tests distinct case-sensitive directories otherwise.
+The launch tests prove canonical metadata and cwd handoff, refusal before agent launch, and primary-checkout exclusion through path aliases.
+The relaunch test proves a conflicting worktree remote refuses before agent exit or brief edits, preserving uncommitted work.
+The refresh test proves a disagreement stops before fetching or moving refs.
+These checks run in the common ship/scout path for tmux, Herdr, zellij, Orca and cmux, before harness-specific launch; relaunch supports tmux and Herdr and checks agreement before either backend stops an agent.
+They do not change harness detection or drive a real backend lifecycle.
+
 ## Harness detection precedence
 
 Firstmate's own harness comes from two kinds of evidence, and `bin/fm-harness.sh` owns how they combine: an environment marker names its harness, and the nearest harness process in the parent chain proves who owns the process tree.
